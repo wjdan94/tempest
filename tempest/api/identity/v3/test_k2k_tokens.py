@@ -119,9 +119,6 @@ class K2KTokensV3Test(base.BaseIdentityV3Test):
           }
 
         headers = {"Content-Type": "application/json"}
-	# there has to be a nicer way. I think a cleaner way is to import rest_client 
-	# directly instead of accessing it through k2k_token_client THEN token_client
-	# THEN rest_client
         token_client = k2k_token_client.K2KTokenClient(idp_auth_url).token_client
 	r, b = token_client.post(url=idp_auth_url, headers=headers, body=json.dumps(body))
         return r, b

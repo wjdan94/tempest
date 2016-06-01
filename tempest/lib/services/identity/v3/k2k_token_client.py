@@ -26,7 +26,6 @@ class K2KTokenClient(rest_client.RestClient):
                  disable_ssl_certificate_validation=None,
                  ca_certs=None, trace_requests=None):
 	self.token_client = token_client.V3TokenClient(auth_url)
-   
  
     def get_token(self, **kwargs):
         return self.token_client.get_token(**kwargs)
@@ -66,24 +65,26 @@ class K2KTokenClient(rest_client.RestClient):
 	url = 'http://localhost:5000/v3/auth/OS-FEDERATION/saml2/ecp'
 	endpoint_filter = {'version': (3, 0),
                            'interface': 'public'}
-
         headers = {'Accept': 'application/json'}
-
-        resp, body = self.token_client.post(url=url,
-                               body=json.dumps(body, sort_keys=True),
-                               headers=headers, saml='saml2')
-
-        self.expected_success(200, resp.status)
+        
+	resp, body = self.token_client.raw_request(method='POST',
+					url=url,
+                                        headers=headers,
+                                       	body=json.dumps(body, sort_keys=True))
+ 
+	self.expected_success(200, resp.status)
         return six.text_type(body)
 
 
     def get_unscoped_token(self, assertion, sp_auth_url, ecp_url):
         """Send assertion to a Keystone SP and get an unscoped token"""
 	
-        r, b = self.token_client.post(
-            url=ecp_url,
-            headers={'Content-Type': 'application/vnd.paos+xml'},
-            body=assertion, saml='saml2')
+	headers={'Content-Type': 'application/vnd.paos+xml'}
+
+	r, b = self.token_client.raw_request(method='POST',
+						url=ecp_url,
+						headers=headers,
+						body=assertion)
 	
 	cookie = r['set-cookie'].split(';')[0]
         headers={'Content-Type': 'application/vnd.paos+xml',
