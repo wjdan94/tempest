@@ -1,4 +1,5 @@
 # Copyright 2014 Hewlett-Packard Development Company, L.P.
+# Copyright 2016 Rackspace Inc.
 # All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -25,6 +26,8 @@ from six.moves.urllib import parse as urlparse
 from tempest.lib import exceptions
 from tempest.lib.services.identity.v2 import token_client as json_v2id
 from tempest.lib.services.identity.v3 import token_client as json_v3id
+
+from tempest.services.volume.base import get_scoped_token
 
 ISO8601_FLOAT_SECONDS = '%Y-%m-%dT%H:%M:%S.%fZ'
 ISO8601_INT_SECONDS = '%Y-%m-%dT%H:%M:%SZ'
@@ -179,13 +182,20 @@ class AuthProvider(object):
         :param headers: HTTP headers of the request
         :param body: HTTP body in case of POST / PUT
         :param filters: select a base URL out of the catalog
-        :returns a Tuple (url, headers, body)
+        :return: a Tuple (url, headers, body)
         """
         orig_req = dict(url=url, headers=headers, body=body)
-
-        auth_url, auth_headers, auth_body = self._decorate_request(
-            filters, method, url, headers, body)
-        auth_req = dict(url=auth_url, headers=auth_headers, body=auth_body)
+      	
+	#CHANGED 
+	# set auth_data parameter to prevent our token to 
+	# get overwritten in _decorate_request_()
+	auth_data = None 
+	if (body and 'sp_id' in body) or 'X-Auth-Token' in headers:
+	    auth_data = get_scoped_token.scoped_token_client().get_scoped_token()
+	
+	auth_url, auth_headers, auth_body = self._decorate_request(
+            filters, method, url, headers, body, auth_data=auth_data)
+	auth_req = dict(url=auth_url, headers=auth_headers, body=auth_body)
 
         # Overwrite part if the request if it has been requested
         if self.alt_part is not None:
@@ -223,6 +233,7 @@ class AuthProvider(object):
         Configure auth provider to provide alt authentication data
         on a part of the *next* auth_request. If credentials are None,
         set invalid data.
+
         :param request_part: request part to contain invalid auth: url,
                              headers, body
         :param auth_data: alternative auth_data from which to get the
@@ -260,7 +271,7 @@ class KeystoneAuthProvider(AuthProvider):
                  disable_ssl_certificate_validation=None,
                  ca_certs=None, trace_requests=None, scope='project'):
         super(KeystoneAuthProvider, self).__init__(credentials, scope)
-        self.dsvm = disable_ssl_certificate_validation
+        self.dscv = disable_ssl_certificate_validation
         self.ca_certs = ca_certs
         self.trace_requests = trace_requests
         self.auth_url = auth_url
@@ -271,8 +282,9 @@ class KeystoneAuthProvider(AuthProvider):
         if auth_data is None:
             auth_data = self.get_auth()
         token, _ = auth_data
+	base_url = None
         base_url = self.base_url(filters=filters, auth_data=auth_data)
-        # build authenticated request
+	# build authenticated request
         # returns new request, it does not touch the original values
         _headers = copy.deepcopy(headers) if headers is not None else {}
         _headers['X-Auth-Token'] = str(token)
@@ -286,6 +298,7 @@ class KeystoneAuthProvider(AuthProvider):
             _url = urlparse.urlunparse(parts)
         # no change to method or body
         return str(_url), _headers, body
+
 
     @abc.abstractmethod
     def _auth_client(self):
@@ -339,7 +352,7 @@ class KeystoneV2AuthProvider(KeystoneAuthProvider):
 
     def _auth_client(self, auth_url):
         return json_v2id.TokenClient(
-            auth_url, disable_ssl_certificate_validation=self.dsvm,
+            auth_url, disable_ssl_certificate_validation=self.dscv,
             ca_certs=self.ca_certs, trace_requests=self.trace_requests)
 
     def _auth_params(self):
@@ -365,40 +378,74 @@ class KeystoneV2AuthProvider(KeystoneAuthProvider):
         if self.credentials.user_id is None:
             self.credentials.user_id = user['id']
 
+    def is_expired(self, auth_data):
+        _, access = auth_data
+        expiry = self._parse_expiry_time(access['token']['expires'])
+        return (expiry - self.token_expiry_threshold <=
+                datetime.datetime.utcnow())
+
     def base_url(self, filters, auth_data=None):
         """Base URL from catalog
 
+        :param filters: Used to filter results
+
         Filters can be:
-        - service: compute, image, etc
-        - region: the service region
-        - endpoint_type: adminURL, publicURL, internalURL
-        - api_version: replace catalog version with this
-        - skip_path: take just the base URL
+
+        - service: service type name such as compute, image, etc.
+        - region: service region name
+        - name: service name, only if service exists
+        - endpoint_type: type of endpoint such as
+            adminURL, publicURL, internalURL
+        - api_version: the version of api used to replace catalog version
+        - skip_path: skips the suffix path of the url and uses base URL
+
+        :rtype: string
+        :return: url with filters applied
         """
-        if auth_data is None:
+	if auth_data is None:
             auth_data = self.get_auth()
         token, _auth_data = auth_data
         service = filters.get('service')
         region = filters.get('region')
+        name = filters.get('name')
         endpoint_type = filters.get('endpoint_type', 'publicURL')
 
         if service is None:
             raise exceptions.EndpointNotFound("No service provided")
 
         _base_url = None
-        for ep in _auth_data['serviceCatalog']:
-            if ep["type"] == service:
-                for _ep in ep['endpoints']:
-                    if region is not None and _ep['region'] == region:
-                        _base_url = _ep.get(endpoint_type)
-                if not _base_url:
-                    # No region matching, use the first
-                    _base_url = ep['endpoints'][0].get(endpoint_type)
-                break
+	#CHANGED
+	# our token's service catalog is called 'catalog'
+	# and endpoint_type is 'url'
+	if 'catalog' in _auth_data: 
+            for ep in _auth_data['catalog']:
+                if ep["type"] == service:
+                    if name is not None and ep["name"] != name:
+                        continue
+                    for _ep in ep['endpoints']:
+                        if region is not None and _ep['region'] == region:
+                            _base_url = _ep.get('url')
+                    if not _base_url:
+                        # No region or name matching, use the first
+                        _base_url = ep['endpoints'][0].get(endpoint_type)
+                    break
+	else:
+            for ep in _auth_data['serviceCatalog']:
+                if ep["type"] == service:
+                    if name is not None and ep["name"] != name:
+                        continue
+                    for _ep in ep['endpoints']:
+                        if region is not None and _ep['region'] == region:
+                            _base_url = _ep.get(endpoint_type)
+                    if not _base_url:
+                        # No region or name matching, use the first
+                        _base_url = ep['endpoints'][0].get(endpoint_type)
+                    break
+
         if _base_url is None:
             raise exceptions.EndpointNotFound(
-                "service: %s, region: %s, endpoint_type: %s" %
-                (service, region, endpoint_type))
+                "service: %s, region: %s, endpoint_type: %s, name: %s" %
+                (service, region, endpoint_type, name))
         return apply_url_filters(_base_url, filters)
 
     def is_expired(self, auth_data):
@@ -415,7 +462,7 @@ class KeystoneV3AuthProvider(KeystoneAuthProvider):
 
     def _auth_client(self, auth_url):
         return json_v3id.V3TokenClient(
-            auth_url, disable_ssl_certificate_validation=self.dsvm,
+            auth_url, disable_ssl_certificate_validation=self.dscv,
             ca_certs=self.ca_certs, trace_requests=self.trace_requests)
 
     def _auth_params(self):
@@ -489,18 +536,27 @@ class KeystoneV3AuthProvider(KeystoneAuthProvider):
         the auth_data. In such case, as long as the requested service is
         'identity', we can use the original auth URL to build the base_url.
 
+        :param filters: Used to filter results
+
         Filters can be:
-        - service: compute, image, etc
-        - region: the service region
-        - endpoint_type: adminURL, publicURL, internalURL
-        - api_version: replace catalog version with this
-        - skip_path: take just the base URL
+
+        - service: service type name such as compute, image, etc.
+        - region: service region name
+        - name: service name, only if service exists
+        - endpoint_type: type of endpoint such as
+            adminURL, publicURL, internalURL
+        - api_version: the version of api used to replace catalog version
+        - skip_path: skips the suffix path of the url and uses base URL
+
+        :rtype: string
+        :return: url with filters applied
         """
         if auth_data is None:
             auth_data = self.get_auth()
         token, _auth_data = auth_data
         service = filters.get('service')
         region = filters.get('region')
+        name = filters.get('name')
         endpoint_type = filters.get('endpoint_type', 'public')
 
         if service is None:
@@ -510,19 +566,38 @@ class KeystoneV3AuthProvider(KeystoneAuthProvider):
             endpoint_type = endpoint_type.replace('URL', '')
         _base_url = None
         catalog = _auth_data.get('catalog', [])
+
         # Select entries with matching service type
         service_catalog = [ep for ep in catalog if ep['type'] == service]
         if len(service_catalog) > 0:
-            service_catalog = service_catalog[0]['endpoints']
+            if name is not None:
+                service_catalog = (
+                    [ep for ep in service_catalog if ep['name'] == name])
+                if len(service_catalog) > 0:
+                    service_catalog = service_catalog[0]['endpoints']
+                else:
+                    raise exceptions.EndpointNotFound(name)
+            else:
+                service_catalog = service_catalog[0]['endpoints']
         else:
             if len(catalog) == 0 and service == 'identity':
                 # NOTE(andreaf) If there's no catalog at all and the service
                 # is identity, it's a valid use case. Having a non-empty
                 # catalog with no identity in it is not valid instead.
+                msg = ('Got an empty catalog. Scope: %s. '
+                       'Falling back to configured URL for %s: %s')
+                LOG.debug(msg, self.scope, service, self.auth_url)
                 return apply_url_filters(self.auth_url, filters)
             else:
                 # No matching service
-                raise exceptions.EndpointNotFound(service)
+                msg = ('No matching service found in the catalog.\n'
+                       'Scope: %s, Credentials: %s\n'
+                       'Auth data: %s\n'
+                       'Service: %s, Region: %s, endpoint_type: %s\n'
+                       'Catalog: %s')
+                raise exceptions.EndpointNotFound(msg % (
+                    self.scope, self.credentials, _auth_data, service, region,
+                    endpoint_type, catalog))
         # Filter by endpoint type (interface)
         filtered_catalog = [ep for ep in service_catalog if
                             ep['interface'] == endpoint_type]
@@ -533,7 +608,7 @@ class KeystoneV3AuthProvider(KeystoneAuthProvider):
         filtered_catalog = [ep for ep in filtered_catalog if
                             ep['region'] == region]
         if len(filtered_catalog) == 0:
-            # No matching region, take the first endpoint
+            # No matching region (or name), take the first endpoint
             filtered_catalog = [service_catalog[0]]
         # There should be only one match. If not take the first.
         _base_url = filtered_catalog[0].get('url', None)
@@ -590,9 +665,9 @@ def get_credentials(auth_url, fill_in=True, identity_version='v2',
     creds = credential_class(**kwargs)
     # Fill in the credentials fields that were not specified
     if fill_in:
-        dsvm = disable_ssl_certificate_validation
+        dscv = disable_ssl_certificate_validation
         auth_provider = auth_provider_class(
-            creds, auth_url, disable_ssl_certificate_validation=dsvm,
+            creds, auth_url, disable_ssl_certificate_validation=dscv,
             ca_certs=ca_certs, trace_requests=trace_requests)
         creds = auth_provider.fill_credentials()
     return creds

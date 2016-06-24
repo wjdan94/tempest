@@ -26,7 +26,7 @@ from oslo_serialization import jsonutils as json
 import six
 
 from tempest.lib.common import http
-from tempest.lib.common.utils import misc as misc_utils
+from tempest.lib.common.utils import test_utils
 from tempest.lib import exceptions
 
 # redrive rate limited calls at most twice
@@ -54,6 +54,8 @@ class RestClient(object):
     :param auth_provider: an auth provider object used to wrap requests in auth
     :param str service: The service name to use for the catalog lookup
     :param str region: The region to use for the catalog lookup
+    :param str name: The endpoint name to use for the catalog lookup; this
+                     returns only if the service exists
     :param str endpoint_type: The endpoint type to use for the catalog lookup
     :param int build_interval: Time in seconds between to status checks in
                                wait loops
@@ -76,10 +78,11 @@ class RestClient(object):
                  endpoint_type='publicURL',
                  build_interval=1, build_timeout=60,
                  disable_ssl_certificate_validation=False, ca_certs=None,
-                 trace_requests=''):
+                 trace_requests='', name=None):
         self.auth_provider = auth_provider
         self.service = service
         self.region = region
+        self.name = name
         self.endpoint_type = endpoint_type
         self.build_interval = build_interval
         self.build_timeout = build_timeout
@@ -191,7 +194,8 @@ class RestClient(object):
         _filters = dict(
             service=self.service,
             endpoint_type=self.endpoint_type,
-            region=self.region
+            region=self.region,
+            name=self.name
         )
         if self.api_version is not None:
             _filters['api_version'] = self.api_version
@@ -397,7 +401,7 @@ class RestClient(object):
                            req_body=None):
         if req_headers is None:
             req_headers = {}
-        caller_name = misc_utils.find_test_caller()
+        caller_name = test_utils.find_test_caller()
         if self.trace_requests and re.search(self.trace_requests, caller_name):
             self.LOG.debug('Starting Request (%s): %s %s' %
                            (caller_name, method, req_url))
@@ -436,7 +440,7 @@ class RestClient(object):
         # we're going to just provide work around on who is actually
         # providing timings by gracefully adding no content if they don't.
         # Once we're down to 1 caller, clean this up.
-        caller_name = misc_utils.find_test_caller()
+        caller_name = test_utils.find_test_caller()
         if secs:
             secs = " %.3fs" % secs
         self.LOG.info(
@@ -532,8 +536,6 @@ class RestClient(object):
         # Authenticate the request with the auth provider
         req_url, req_headers, req_body = self.auth_provider.auth_request(
             method, url, headers, body, self.filters)
-
-        # Do the actual request, and time it
         start = time.time()
         self._log_request_start(method, req_url)
         resp, resp_body = self.raw_request(
@@ -639,7 +641,6 @@ class RestClient(object):
                 headers.update(self.get_headers())
             except (ValueError, TypeError):
                 headers = self.get_headers()
-
         resp, resp_body = self._request(method, url, headers=headers,
                                         body=body, chunked=chunked)
 
@@ -833,7 +834,9 @@ class RestClient(object):
             return True
         return 'exceed' in resp_body.get('message', 'blabla')
 
-    def wait_for_resource_deletion(self, id):
+    #CHANGED
+    # passed 'sp_id' parameter for is_resource_deleted() 
+    def wait_for_resource_deletion(self, id, sp_id=None):
         """Waits for a resource to be deleted
 
         This method will loop over is_resource_deleted until either
@@ -844,22 +847,22 @@ class RestClient(object):
         :raises TimeoutException: If the build_timeout has elapsed and the
                                   resource still hasn't been deleted
         """
-        start_time = int(time.time())
+	start_time = int(time.time())
         while True:
-            if self.is_resource_deleted(id):
+            if self.is_resource_deleted(id, sp_id=sp_id):
                 return
             if int(time.time()) - start_time >= self.build_timeout:
                 message = ('Failed to delete %(resource_type)s %(id)s within '
                            'the required time (%(timeout)s s).' %
                            {'resource_type': self.resource_type, 'id': id,
                             'timeout': self.build_timeout})
-                caller = misc_utils.find_test_caller()
+                caller = test_utils.find_test_caller()
                 if caller:
                     message = '(%s) %s' % (caller, message)
                 raise exceptions.TimeoutException(message)
             time.sleep(self.build_interval)
 
-    def is_resource_deleted(self, id):
+    def is_resource_deleted(self, id, sp_id=None):
         """Subclasses override with specific deletion detection."""
         message = ('"%s" does not implement is_resource_deleted'
                    % self.__class__.__name__)

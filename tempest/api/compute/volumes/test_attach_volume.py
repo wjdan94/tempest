@@ -24,6 +24,7 @@ from tempest import test
 
 CONF = config.CONF
 
+import pdb
 
 class AttachVolumeTestJSON(base.BaseV2ComputeTest):
     max_microversion = '2.19'
@@ -56,18 +57,19 @@ class AttachVolumeTestJSON(base.BaseV2ComputeTest):
             self.servers_client.detach_volume(server_id, volume_id)
             waiters.wait_for_volume_status(self.volumes_client,
                                            volume_id, 'available')
-
-    def _delete_volume(self):
+    #CHANGED
+    def _delete_volume(self, sp_id='test-sp'):
         # Delete the created Volumes
         if self.volume:
-            self.volumes_client.delete_volume(self.volume['id'])
-            self.volumes_client.wait_for_resource_deletion(self.volume['id'])
+            self.volumes_client.delete_volume(self.volume['id'], sp_id=sp_id)
+            self.volumes_client.wait_for_resource_deletion(self.volume['id'], sp_id=sp_id)
             self.volume = None
 
-    def _create_and_attach(self, shelve_server=False):
+    #CHANGED
+    def _create_and_attach(self, shelve_server=False, sp_id=None):
         # Start a server and wait for it to become ready
         self.admin_pass = self.image_ssh_password
-        self.server = self.create_test_server(
+	self.server = self.create_test_server(
             validatable=True,
             wait_until='ACTIVE',
             adminPass=self.admin_pass)
@@ -77,11 +79,11 @@ class AttachVolumeTestJSON(base.BaseV2ComputeTest):
             self.server['id'])['addresses']
 
         # Create a volume and wait for it to become ready
-        self.volume = self.volumes_client.create_volume(
-            size=CONF.volume.volume_size, display_name='test')['volume']
+	self.volume = self.volumes_client.create_volume(
+            size=CONF.volume.volume_size, display_name='test', sp_id=sp_id)['volume']
         self.addCleanup(self._delete_volume)
         waiters.wait_for_volume_status(self.volumes_client,
-                                       self.volume['id'], 'available')
+                                       self.volume['id'], 'available', sp_id=sp_id)
 
         if shelve_server:
             # NOTE(andreaf) If we are going to shelve a server, we should
@@ -98,25 +100,25 @@ class AttachVolumeTestJSON(base.BaseV2ComputeTest):
             linux_client.validate_authentication()
             # If validation went ok, shelve the server
             compute.shelve_server(self.servers_client, self.server['id'])
-
+	
         # Attach the volume to the server
         self.attachment = self.servers_client.attach_volume(
             self.server['id'],
             volumeId=self.volume['id'],
             device='/dev/%s' % self.device)['volumeAttachment']
         waiters.wait_for_volume_status(self.volumes_client,
-                                       self.volume['id'], 'in-use')
+                                       self.volume['id'], 'in-use', sp_id=sp_id)
 
         self.addCleanup(self._detach, self.server['id'], self.volume['id'])
-
+ 
+    #CHANGED	
     @test.idempotent_id('52e9045a-e90d-4c0d-9087-79d657faffff')
     @testtools.skipUnless(CONF.validation.run_validation,
                           'SSH required for this test')
     def test_attach_detach_volume(self):
         # Stop and Start a server with an attached volume, ensuring that
         # the volume remains attached.
-        self._create_and_attach()
-
+        self._create_and_attach(sp_id='test-sp')
         self.servers_client.stop_server(self.server['id'])
         waiters.wait_for_server_status(self.servers_client, self.server['id'],
                                        'SHUTOFF')
@@ -200,7 +202,7 @@ class AttachVolumeShelveTestJSON(AttachVolumeTestJSON):
             server=self.server,
             servers_client=self.servers_client)
 
-        command = 'grep vd /proc/partitions | wc -l'
+        command = 'grep [vs]d /proc/partitions | wc -l'
         nb_partitions = linux_client.exec_command(command).strip()
         self.assertEqual(number_of_partition, nb_partitions)
 

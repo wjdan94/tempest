@@ -13,8 +13,8 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-from tempest.services.volume.base import base_volumes_client
+from tempest.services.volume.base import base_k2k_volumes_client
 
 
-class VolumesClient(base_volumes_client.BaseVolumesClient):
+class VolumesClient(base_k2k_volumes_client.BaseVolumesClient):
     """Client class to send CRUD Volume V1 API requests"""

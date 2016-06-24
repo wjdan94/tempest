@@ -162,16 +162,17 @@ def wait_for_image_status(client, image_id, status):
         message = '(%s) %s' % (caller, message)
     raise exceptions.TimeoutException(message)
 
-
-def wait_for_volume_status(client, volume_id, status):
+#CHANGED
+# passed 'sp_id' parameter for show_volume() call 
+def wait_for_volume_status(client, volume_id, status, sp_id=None):
     """Waits for a Volume to reach a given status."""
-    body = client.show_volume(volume_id)['volume']
+    body = client.show_volume(volume_id, sp_id=sp_id)['volume']
     volume_status = body['status']
     start = int(time.time())
-
+    
     while volume_status != status:
         time.sleep(client.build_interval)
-        body = client.show_volume(volume_id)['volume']
+        body = client.show_volume(volume_id, sp_id=sp_id)['volume']
         volume_status = body['status']
         if volume_status == 'error':
             raise exceptions.VolumeBuildErrorException(volume_id=volume_id)
